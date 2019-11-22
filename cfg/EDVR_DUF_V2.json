@@ -1,0 +1,28 @@
+{
+    "net": "EDVR_DUF_V2",
+
+    "input_size": [256,256],
+
+    "depth": 9,
+    "batch_size": 10,
+    "loss": "L1",
+    "PP_loss": false,
+    "max_epochs": 100,
+    "lr": 0.0001,
+    "multi_step": [40, 60, 80],
+
+    "validation_per_epochs": 10,
+    "validation_batch_size": 4,
+
+    "result_path": "train_result/EDVR_DUF_V2",
+    "best_model_name": "best.pkl",
+    "min_loss_model_name": "min_loss.pkl",
+    "ckpt_name": "ckpt_epoch_{}.pkl",
+
+    "flip": true,
+
+    "MiniTest": false,
+
+    "seg_frame": true,
+    "extension": "png"
+}

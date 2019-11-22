@@ -1,0 +1,27 @@
+{
+    "net": "EDVR_CBAM",
+
+    "input_size": [256,256],
+
+    "depth": 9,
+    "batch_size": 10,
+    "loss": "L1",
+    "max_epochs": 100,
+    "lr": 0.0001,
+    "multi_step": [40, 60, 80, 100],
+
+    "validation_per_epochs": 10,
+    "validation_batch_size": 2,
+
+    "result_path": "train_result/EDVR_CBAM_multistep",
+    "best_model_name": "best.pkl",
+    "min_loss_model_name": "min_loss.pkl",
+    "ckpt_name": "ckpt_epoch_{}.pkl",
+
+    "flip": true,
+
+    "MiniTest": false,
+
+    "seg_frame": true,
+    "extension": "png"
+}
