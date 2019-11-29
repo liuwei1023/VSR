@@ -40,6 +40,7 @@ class Config:
         self._configs["seg_frame"] = False
         self._configs["extension"] = "png"
         self._configs["MiniTest"] = False
+        self._configs["Stage2"] = False
 
         # non-local block
         self._configs["non_local"] = [1, 3, 2]
@@ -107,6 +108,10 @@ class Config:
     @property
     def MiniTest(self):
         return self._configs["MiniTest"]
+
+    @property
+    def Stage2(self):
+        return self._configs["Stage2"]
 
     @property
     def seg_frame(self):

@@ -1435,3 +1435,281 @@ class EDVR_CBAM_Nonlocal(nn.Module):
             base = F.interpolate(x_center, scale_factor=4, mode='bilinear', align_corners=False)
         out += base
         return out
+
+
+class EDVR_Denoise_Nonlocal(nn.Module):
+    def __init__(self,
+                 nf=64,
+                 nframes=5,
+                 groups=8,
+                 sdenoise_RBs=5,
+                 tdenoise_RBs=5,
+                 front_RBs_L=3,
+                 front_nonlocal_block=3,
+                 front_RBs_R =2,
+                 back_RBs_L_1=7,
+                 back_RBs_nonlocal_block_1=3,
+                 back_RBs_R_1=3,
+                 back_RBs_L_2=7,
+                 back_RBs_nonlocal_block_2=2,
+                 back_RBs_R_2=3,
+                 center=None,
+                 predeblur=False,
+                 HR_in=False):
+        super(EDVR_Denoise_Nonlocal, self).__init__()
+        self.nf = nf
+        self.center = nframes // 2 if center is None else center
+        self.is_predeblur = True if predeblur else False
+        self.HR_in = True if HR_in else False
+        CBAMlock_f = functools.partial(mutil.CBAM, nf=nf)
+        non_local_block = functools.partial(mutil._NonLocalBlockND, in_channels=nf)
+        self.predenoise = Predenoise(nf=nf, denoise_RBs=sdenoise_RBs)
+        #### extract features (for each frame)
+        if self.is_predeblur:
+            self.pre_deblur = Predeblur_ResNet_Pyramid(nf=nf, HR_in=self.HR_in)
+            self.conv_1x1 = nn.Conv2d(nf, nf, 1, 1, bias=True)
+        else:
+            if self.HR_in:
+                self.conv_first_1 = nn.Conv2d(3, nf, 3, 1, 1, bias=True)
+                self.conv_first_2 = nn.Conv2d(nf, nf, 3, 2, 1, bias=True)
+                self.conv_first_3 = nn.Conv2d(nf, nf, 3, 2, 1, bias=True)
+            else:
+                self.conv_first = nn.Conv2d(3, nf, 3, 1, 1, bias=True)
+        self.feature_extraction_L = mutil.make_layer(CBAMlock_f, front_RBs_L)
+        self.feature_extraction_nonlocal = mutil.make_layer(non_local_block, front_nonlocal_block)
+        self.feature_extraction_R = mutil.make_layer(CBAMlock_f, front_RBs_R)
+        self.fea_L2_conv1 = nn.Conv2d(nf, nf, 3, 2, 1, bias=True)
+        self.fea_L2_conv2 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+        self.fea_L3_conv1 = nn.Conv2d(nf, nf, 3, 2, 1, bias=True)
+        self.fea_L3_conv2 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+
+        self.pcd_align = PCD_Align(nf=nf, groups=groups)
+        self.tsa_fusion = TSA_Fusion(nf=nf, nframes=nframes, center=self.center)
+
+        #### reconstruction
+        self.recon_trunk_L_1 = mutil.make_layer(CBAMlock_f, back_RBs_L_1)
+        self.recon_trunk_nonlocal_1 = mutil.make_layer(CBAMlock_f, back_RBs_nonlocal_block_1)
+        self.recon_trunk_R_1 = mutil.make_layer(CBAMlock_f, back_RBs_R_1)
+
+        self.recon_trunk_L_2 = mutil.make_layer(CBAMlock_f, back_RBs_L_2)
+        self.recon_trunk_nonlocal_2 = mutil.make_layer(CBAMlock_f, back_RBs_nonlocal_block_2)
+        self.recon_trunk_R_2 = mutil.make_layer(CBAMlock_f, back_RBs_R_2)
+
+        self.temp_denoise = mutil.make_layer(CBAMlock_f, tdenoise_RBs)
+        #### upsampling
+        self.upconv1 = nn.Conv2d(nf, nf * 4, 3, 1, 1, bias=True)
+        self.upconv2 = nn.Conv2d(nf, 64 * 4, 3, 1, 1, bias=True)
+        self.pixel_shuffle = nn.PixelShuffle(2)
+        self.HRconv = nn.Conv2d(64, 64, 3, 1, 1, bias=True)
+        self.conv_last = nn.Conv2d(64, 3, 3, 1, 1, bias=True)
+        #### temp_denoise
+        self.denoise_upconv1 = nn.Conv2d(nf, nf * 4, 3, 1, 1, bias=True)
+        self.denoise_upconv2 = nn.Conv2d(nf, 64 * 4, 3, 1, 1, bias=True)
+        self.denoise_HRconv = nn.Conv2d(64, 64, 3, 1, 1, bias=True)
+        self.denoise_conv_last = nn.Conv2d(64, 3, 3, 1, 1, bias=True)
+        #### activation function
+        self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
+
+    def forward(self, x):
+        B, N, C, H, W = x.size()  # N video frames
+        x_center = x[:, self.center, :, :, :].contiguous()
+
+        #### extract LR features
+        # L1
+        if self.is_predeblur:
+            L1_fea = self.pre_deblur(x.view(-1, C, H, W))
+            L1_fea = self.conv_1x1(L1_fea)
+            if self.HR_in:
+                H, W = H // 4, W // 4
+        else:
+            if self.HR_in:
+                L1_fea = self.lrelu(self.conv_first_1(x.view(-1, C, H, W)))
+                L1_fea = self.lrelu(self.conv_first_2(L1_fea))
+                L1_fea = self.lrelu(self.conv_first_3(L1_fea))
+                H, W = H // 4, W // 4
+            else:
+                spatial_denoise_input = self.predenoise(x.view(-1, C, H, W))
+                x_spatial_denoise = spatial_denoise_input.view(B, N, C, H, W)
+                x_spatial_denoise_center = x_spatial_denoise[:, self.center, :, :, :].contiguous()
+                L1_fea = self.lrelu(self.conv_first(spatial_denoise_input))
+        L1_fea = self.feature_extraction_L(L1_fea)
+        L1_fea = self.feature_extraction_nonlocal(L1_fea)
+        L1_fea = self.feature_extraction_R(L1_fea)
+        # L2
+        L2_fea = self.lrelu(self.fea_L2_conv1(L1_fea))
+        L2_fea = self.lrelu(self.fea_L2_conv2(L2_fea))
+        # L3
+        L3_fea = self.lrelu(self.fea_L3_conv1(L2_fea))
+        L3_fea = self.lrelu(self.fea_L3_conv2(L3_fea))
+
+        L1_fea = L1_fea.view(B, N, -1, H, W)
+        L2_fea = L2_fea.view(B, N, -1, H // 2, W // 2)
+        L3_fea = L3_fea.view(B, N, -1, H // 4, W // 4)
+
+        #### pcd align
+        # ref feature list
+        ref_fea_l = [
+            L1_fea[:, self.center, :, :, :].clone(), L2_fea[:, self.center, :, :, :].clone(),
+            L3_fea[:, self.center, :, :, :].clone()
+        ]
+        aligned_fea = []
+        for i in range(N):
+            nbr_fea_l = [
+                L1_fea[:, i, :, :, :].clone(), L2_fea[:, i, :, :, :].clone(),
+                L3_fea[:, i, :, :, :].clone()
+            ]
+            aligned_fea.append(self.pcd_align(nbr_fea_l, ref_fea_l))
+        aligned_fea = torch.stack(aligned_fea, dim=1)  # [B, N, C, H, W]
+
+        fea = self.tsa_fusion(aligned_fea)
+
+        out = self.recon_trunk_L_1(fea)
+        out = self.recon_trunk_nonlocal_1(out)
+        out = self.recon_trunk_R_1(out)
+        out = self.recon_trunk_L_2(out)
+        out = self.recon_trunk_nonlocal_2(out)
+        out = self.recon_trunk_R_2(out)   
+
+        out = self.lrelu(self.pixel_shuffle(self.upconv1(out)))
+        out = self.lrelu(self.pixel_shuffle(self.upconv2(out)))
+        out = self.lrelu(self.HRconv(out))
+        out = self.conv_last(out)
+
+        out_denoise = self.temp_denoise(fea)
+        out_denoise = self.lrelu(self.pixel_shuffle(self.denoise_upconv1(out_denoise)))
+        out_denoise = self.lrelu(self.pixel_shuffle(self.denoise_upconv2(out_denoise)))
+        out_denoise = self.lrelu(self.denoise_HRconv(out_denoise))
+        out_denoise = self.denoise_conv_last(out_denoise)
+        if self.HR_in:
+            base = x_center
+        else:
+            base = F.interpolate(x_spatial_denoise_center, scale_factor=4, mode='bilinear', align_corners=False)
+        out += base
+        out = out - out_denoise
+        return out
+
+class EDVR_CBAM_Denoise(nn.Module):
+    def __init__(self,
+                 nf=64,
+                 nframes=5,
+                 groups=8,
+                 sdenoise_RBs=5,
+                 tdenoise_RBs=5,
+                 front_RBs=5,
+                 back_RBs=10,
+                 center=None,
+                 predeblur=False,
+                 HR_in=False):
+        super(EDVR_CBAM_Denoise, self).__init__()
+        self.nf = nf
+        self.center = nframes // 2 if center is None else center
+        self.is_predeblur = True if predeblur else False
+        self.HR_in = True if HR_in else False
+        CBAMlock_f = functools.partial(mutil.CBAM, nf=nf)
+        self.predenoise = Predenoise(nf=nf, denoise_RBs=sdenoise_RBs)
+        #### extract features (for each frame)
+        if self.is_predeblur:
+            self.pre_deblur = Predeblur_ResNet_Pyramid(nf=nf, HR_in=self.HR_in)
+            self.conv_1x1 = nn.Conv2d(nf, nf, 1, 1, bias=True)
+        else:
+            if self.HR_in:
+                self.conv_first_1 = nn.Conv2d(3, nf, 3, 1, 1, bias=True)
+                self.conv_first_2 = nn.Conv2d(nf, nf, 3, 2, 1, bias=True)
+                self.conv_first_3 = nn.Conv2d(nf, nf, 3, 2, 1, bias=True)
+            else:
+                self.conv_first = nn.Conv2d(3, nf, 3, 1, 1, bias=True)
+        self.feature_extraction = mutil.make_layer(CBAMlock_f, front_RBs)
+        self.fea_L2_conv1 = nn.Conv2d(nf, nf, 3, 2, 1, bias=True)
+        self.fea_L2_conv2 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+        self.fea_L3_conv1 = nn.Conv2d(nf, nf, 3, 2, 1, bias=True)
+        self.fea_L3_conv2 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+
+        self.pcd_align = PCD_Align(nf=nf, groups=groups)
+        self.tsa_fusion = TSA_Fusion(nf=nf, nframes=nframes, center=self.center)
+
+        #### reconstruction
+        self.recon_trunk = mutil.make_layer(CBAMlock_f, back_RBs)
+        self.temp_denoise = mutil.make_layer(CBAMlock_f, tdenoise_RBs)
+        #### upsampling
+        self.upconv1 = nn.Conv2d(nf, nf * 4, 3, 1, 1, bias=True)
+        self.upconv2 = nn.Conv2d(nf, 64 * 4, 3, 1, 1, bias=True)
+        self.pixel_shuffle = nn.PixelShuffle(2)
+        self.HRconv = nn.Conv2d(64, 64, 3, 1, 1, bias=True)
+        self.conv_last = nn.Conv2d(64, 3, 3, 1, 1, bias=True)
+        #### temp_denoise
+        self.denoise_upconv1 = nn.Conv2d(nf, nf * 4, 3, 1, 1, bias=True)
+        self.denoise_upconv2 = nn.Conv2d(nf, 64 * 4, 3, 1, 1, bias=True)
+        self.denoise_HRconv = nn.Conv2d(64, 64, 3, 1, 1, bias=True)
+        self.denoise_conv_last = nn.Conv2d(64, 3, 3, 1, 1, bias=True)
+        #### activation function
+        self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
+
+    def forward(self, x):
+        B, N, C, H, W = x.size()  # N video frames
+        x_center = x[:, self.center, :, :, :].contiguous()
+
+        #### extract LR features
+        # L1
+        if self.is_predeblur:
+            L1_fea = self.pre_deblur(x.view(-1, C, H, W))
+            L1_fea = self.conv_1x1(L1_fea)
+            if self.HR_in:
+                H, W = H // 4, W // 4
+        else:
+            if self.HR_in:
+                L1_fea = self.lrelu(self.conv_first_1(x.view(-1, C, H, W)))
+                L1_fea = self.lrelu(self.conv_first_2(L1_fea))
+                L1_fea = self.lrelu(self.conv_first_3(L1_fea))
+                H, W = H // 4, W // 4
+            else:
+                spatial_denoise_input = self.predenoise(x.view(-1, C, H, W))
+                x_spatial_denoise = spatial_denoise_input.view(B, N, C, H, W)
+                x_spatial_denoise_center = x_spatial_denoise[:, self.center, :, :, :].contiguous()
+                L1_fea = self.lrelu(self.conv_first(spatial_denoise_input))
+        L1_fea = self.feature_extraction(L1_fea)
+        # L2
+        L2_fea = self.lrelu(self.fea_L2_conv1(L1_fea))
+        L2_fea = self.lrelu(self.fea_L2_conv2(L2_fea))
+        # L3
+        L3_fea = self.lrelu(self.fea_L3_conv1(L2_fea))
+        L3_fea = self.lrelu(self.fea_L3_conv2(L3_fea))
+
+        L1_fea = L1_fea.view(B, N, -1, H, W)
+        L2_fea = L2_fea.view(B, N, -1, H // 2, W // 2)
+        L3_fea = L3_fea.view(B, N, -1, H // 4, W // 4)
+
+        #### pcd align
+        # ref feature list
+        ref_fea_l = [
+            L1_fea[:, self.center, :, :, :].clone(), L2_fea[:, self.center, :, :, :].clone(),
+            L3_fea[:, self.center, :, :, :].clone()
+        ]
+        aligned_fea = []
+        for i in range(N):
+            nbr_fea_l = [
+                L1_fea[:, i, :, :, :].clone(), L2_fea[:, i, :, :, :].clone(),
+                L3_fea[:, i, :, :, :].clone()
+            ]
+            aligned_fea.append(self.pcd_align(nbr_fea_l, ref_fea_l))
+        aligned_fea = torch.stack(aligned_fea, dim=1)  # [B, N, C, H, W]
+
+        fea = self.tsa_fusion(aligned_fea)
+
+        out = self.recon_trunk(fea)        
+        out = self.lrelu(self.pixel_shuffle(self.upconv1(out)))
+        out = self.lrelu(self.pixel_shuffle(self.upconv2(out)))
+        out = self.lrelu(self.HRconv(out))
+        out = self.conv_last(out)
+
+        out_denoise = self.temp_denoise(fea)
+        out_denoise = self.lrelu(self.pixel_shuffle(self.denoise_upconv1(out_denoise)))
+        out_denoise = self.lrelu(self.pixel_shuffle(self.denoise_upconv2(out_denoise)))
+        out_denoise = self.lrelu(self.denoise_HRconv(out_denoise))
+        out_denoise = self.denoise_conv_last(out_denoise)
+        if self.HR_in:
+            base = x_center
+        else:
+            base = F.interpolate(x_spatial_denoise_center, scale_factor=4, mode='bilinear', align_corners=False)
+        out += base
+        out = out - out_denoise
+        return out

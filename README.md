@@ -3,6 +3,19 @@
 
 # 修改记录
 
+* 2019/11/29　　　　`v1.9`
+
+    1. 增加stage2代码。
+
+* 2019/11/22　　　　`v1.8`
+
+    1. 增加CBAM_PP的相关代码和配置文件
+    2. 增加CBAM_384的配置文件
+    3. 增加CBAM_512的配置文件
+    4. 增加CBAM_Denoise_Nonlocal的相关代码和配置文件
+    5. 增加CBAM_Denoise的相关代码和配置文件
+    6. 增加相关test_distribution代码
+
 * 2019/11/22　　　　`v1.7`
 
     1. 修改config文件，添加配置文件中non local的设置。
@@ -10,7 +23,7 @@
 * 2019/11/22　　　　`v1.6`
 
     1. 增加Non local模块。
-    2. 增加Non local的config文件。
+    2. 增加Non local的配置文件。
 
 * 2019/11/12　　　　`v1.5`
 

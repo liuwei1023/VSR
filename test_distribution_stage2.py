@@ -89,7 +89,7 @@ if __name__ == "__main__":
     log_path = os.path.join(output_folder, "log.log")
     system_log.set_filepath(log_path)
 
-    input_folder = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1/test/540p"
+    input_folder = "/dfsdata2/liuwei79_data/share/kesci_ai_challenger/vsr/new_round1/train/540P/png"
     depth = system_config.depth
     batch_size = 2
 

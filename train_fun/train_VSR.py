@@ -16,6 +16,7 @@ import models.modules.EDVR_arch as EDVR_arch
 from utils.loss import CharbonnierLoss
 from utils.math_ import AverageMeter, calc_psnr
 from db.dataLoader_VSR import dataset_loader_vsr
+from db.dataLoader_VSR_stage2 import dataset_loader_vsr_stage2
 # from db.dataLoader_VSR_seg import dataset_loader_vsr
 from Logger import system_log
 from config import system_config
@@ -78,31 +79,53 @@ def train_vsr(cfg, model_path=None):
     lr_root = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1/train/540P/" + system_config.extension
     hr_root = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1/train/4K/" + system_config.extension
 
-    if not system_config.MiniTest:
-        train_file = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1/train/train"
-        validation_file = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1/train/validation"
-        if system_config.seg_frame:
-            train_file = f"{train_file}_seg"
-            validation_file = f"{validation_file}_seg"
-            lr_root = f"{lr_root}_seg"
-            hr_root = f"{hr_root}_seg"
+    if system_config.Stage2:
+        if system_config.MiniTest:
+            train_file = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1_stage2/miniTest.txt"
+            validation_file = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1_stage2/miniTest.txt"
+        else:
+            train_file = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1_stage2/train.txt"
+            validation_file = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1_stage2/validation.txt"
 
-        train_file = f"{train_file}.txt"
-        validation_file = f"{validation_file}.txt"
-            
+        lr_root = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1_stage2/img_output/"
+        hr_root = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1/train/4K/png/"
+    
+        
     else:
-        train_file = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1/train/miniTest.txt"
-        validation_file = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1/train/miniTest.txt"
+        if system_config.MiniTest:
+            train_file = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1/train/miniTest.txt"
+            validation_file = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1/train/miniTest.txt"
+        else:
+            train_file = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1/train/train"
+            validation_file = "/dfsdata2/share-group/aisz_group/kesci_ai_challenger/vsr/new_round1/train/validation"
+            if system_config.seg_frame:
+                train_file = f"{train_file}_seg"
+                validation_file = f"{validation_file}_seg"
+                lr_root = f"{lr_root}_seg"
+                hr_root = f"{hr_root}_seg"
 
-    train_loader = torch.utils.data.DataLoader(dataset_loader_vsr(train_file, lr_root, hr_root, system_config.depth, crop_size=system_config.input_size, flip=system_config.flip, extension=system_config.extension, is_train=True), \
-        batch_size=system_config.batch_size, shuffle = True, num_workers=10, pin_memory=True)
-    validation_loader = torch.utils.data.DataLoader(dataset_loader_vsr(validation_file, lr_root, hr_root, system_config.depth, extension=system_config.extension, is_train=False), \
-        batch_size=system_config.validation_batch_size, shuffle = True, num_workers=10, pin_memory=True)
+            train_file = f"{train_file}.txt"
+            validation_file = f"{validation_file}.txt"
+
+        
+
+    if system_config.Stage2:
+        train_loader = torch.utils.data.DataLoader(dataset_loader_vsr_stage2(train_file, lr_root, hr_root, system_config.depth, crop_size=system_config.input_size, flip=system_config.flip, extension=system_config.extension, is_train=True), \
+            batch_size=system_config.batch_size, shuffle = True, num_workers=10, pin_memory=True)
+        validation_loader = torch.utils.data.DataLoader(dataset_loader_vsr_stage2(validation_file, lr_root, hr_root, system_config.depth, extension=system_config.extension, is_train=False), \
+            batch_size=system_config.validation_batch_size, shuffle = True, num_workers=10, pin_memory=True)
+    else:
+        train_loader = torch.utils.data.DataLoader(dataset_loader_vsr(train_file, lr_root, hr_root, system_config.depth, crop_size=system_config.input_size, flip=system_config.flip, extension=system_config.extension, is_train=True), \
+            batch_size=system_config.batch_size, shuffle = True, num_workers=10, pin_memory=True)
+        validation_loader = torch.utils.data.DataLoader(dataset_loader_vsr(validation_file, lr_root, hr_root, system_config.depth, extension=system_config.extension, is_train=False), \
+            batch_size=system_config.validation_batch_size, shuffle = True, num_workers=10, pin_memory=True)
 
     if system_config.net == "EDVR":
         net = EDVR_arch.EDVR(128, system_config.depth, 8, 5, 40, predeblur=False, HR_in=False)
     elif system_config.net == "EDVR_CBAM":
         net = EDVR_arch.EDVR_CBAM(128, system_config.depth, 8, 5, 40, predeblur=False, HR_in=False)
+    elif system_config.net == "EDVR_CBAM_Stage2":
+        net = EDVR_arch.EDVR_CBAM(128, system_config.depth, 8, 5, 40, predeblur=False, HR_in=True)
     elif system_config.net == "EDVR_DUF":
         net = EDVR_arch.EDVR_DUF(128, system_config.depth, 8, 5, 40, predeblur=False, HR_in=False)
     elif system_config.net == "EDVR_DUF_V2":
@@ -119,6 +142,10 @@ def train_vsr(cfg, model_path=None):
         net = EDVR_arch.EDVR_Denoise(128, system_config.depth, 8, 5, 5, 5, 40, predeblur=False, HR_in=False)
     elif system_config.net == "EDVR_CBAM_Nonlocal":
         net = EDVR_arch.EDVR_CBAM_Nonlocal(128, system_config.depth, 8, 3, system_config.non_local[0], 2, 25, system_config.non_local[1], 10, system_config.non_local[2], 5, predeblur=False, HR_in=False)
+    elif system_config.net == "EDVR_CBAM_Denoise_Nonlocal":
+        net = EDVR_arch.EDVR_Denoise_Nonlocal(128, system_config.depth, 8, 5, 5, 3, system_config.non_local[0], 2, 25, system_config.non_local[1], 10, system_config.non_local[2], 5, predeblur=False, HR_in=False)
+    elif system_config.net == "EDVR_CBAM_Denoise":
+        net = EDVR_arch.EDVR_Denoise(128, system_config.depth, 8, 5, 5, 5, 40, predeblur=False, HR_in=False)
      
     if not model_path == None:
         net.load_state_dict(torch.load(model_path))
